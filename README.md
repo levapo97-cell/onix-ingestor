@@ -2,7 +2,8 @@
 
 Punto de entrada de la telemetría de OnixGuard. Escrito en **Go**.
 
-> **Estado (Fase 0):** este binario es el **servicio core temporal**. Hoy solo expone `/healthz` y `/readyz` para validar que el `docker-compose` levanta y que el edge puede hacer health-check. La lógica real llega en Fase 1.
+> **Estado (Fase 1 ✅):** servicio **core** = ingestor + recorder combinados. Consume `onix.raw.*` de NATS/JetStream (consumidor durable `onix-core`) y **persiste en Postgres** auto-registrando `project`/`agent`/`session`. Mantiene `/healthz` y `/readyz`. Sin `DATABASE_URL` corre en modo health-only.
+> Verificado E2E (2026-09-30): un evento real publicado por `onix-hook` queda en Postgres en <1s. Se dividirá en `onix-ingestor` + `onix-recorder` en Fase 2.
 
 ---
 

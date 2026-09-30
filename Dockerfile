@@ -2,11 +2,11 @@
 # El host NO necesita Go: todo se compila dentro del contenedor.
 
 # ---- build ----
-FROM golang:1.23-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 
-# Cache de dependencias (go.mod primero).
-COPY go.mod ./
+# Cache de dependencias (go.mod + go.sum primero).
+COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .

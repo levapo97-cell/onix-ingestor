@@ -8,3 +8,6 @@
 
 # OS
 .DS_Store
+
+# grafo de conocimiento (generado, local)
+graphify-out/
