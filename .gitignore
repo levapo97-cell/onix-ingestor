@@ -1,0 +1,10 @@
+# Go
+/bin/
+/out/
+*.test
+*.out
+# binario compilado con el nombre del módulo
+/onix-ingestor
+
+# OS
+.DS_Store

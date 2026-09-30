@@ -1,0 +1,11 @@
+# CI de onix-ingestor. Invoca el pipeline reutilizable del polyrepo.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  ci:
+    uses: levapo97-cell/onix-deploy/.github/workflows/reusable-ci.yml@main
+    with:
+      lang: go
