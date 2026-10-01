@@ -2,8 +2,7 @@
 
 Punto de entrada de la telemetría de OnixGuard. Escrito en **Go**.
 
-> **Estado (Fase 1 ✅):** servicio **core** = ingestor + recorder combinados. Consume `onix.raw.*` de NATS/JetStream (consumidor durable `onix-core`) y **persiste en Postgres** auto-registrando `project`/`agent`/`session`. Mantiene `/healthz` y `/readyz`. Sin `DATABASE_URL` corre en modo health-only.
-> Verificado E2E (2026-09-30): un evento real publicado por `onix-hook` queda en Postgres en <1s. Se dividirá en `onix-ingestor` + `onix-recorder` en Fase 2.
+> **Estado (Fase 2 ✅):** separado. Ahora **solo valida y normaliza**: consume `onix.raw.*` (consumidor durable `onix-ingestor`), valida los campos del contrato, añade `received_at` y publica `onix.norm.*`. Ya **no** persiste (eso es `onix-recorder`) ni redacta/analiza (eso es `onix-guard`). Mantiene `/healthz` y `/readyz`.
 
 ---
 

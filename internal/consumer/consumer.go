@@ -1,4 +1,5 @@
-// Package consumer se suscribe a onix.raw.* en NATS/JetStream y entrega cada RawEvent al store.
+// Package consumer: FASE 2. Consume onix.raw.*, valida y NORMALIZA el evento, y publica
+// onix.norm.*. Ya NO persiste (eso es onix-recorder). No analiza ni redacta (eso es onix-guard).
 package consumer
 
 import (
@@ -6,20 +7,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	c "github.com/levapo97-cell/onix-contracts/go/onixcontracts"
 )
 
-// Recorder es lo que el consumer necesita del store (facilita tests).
-type Recorder interface {
-	RecordEvent(ctx context.Context, e c.RawEvent) error
-}
-
 const (
-	streamName   = "ONIX_RAW"
-	subjects     = "onix.raw.>"
-	durableName  = "onix-core"
+	streamRaw  = "ONIX_RAW"
+	subjRawAll = "onix.raw.>"
+	streamNorm = "ONIX_NORM"
+	subjNorm   = "onix.norm."
+	subjNormAll = "onix.norm.>"
+	durable    = "onix-ingestor"
 )
 
 type Consumer struct {
@@ -27,61 +27,52 @@ type Consumer struct {
 	sub *nats.Subscription
 }
 
-// Start conecta a NATS, garantiza el stream ONIX_RAW y arranca un consumidor durable.
-func Start(ctx context.Context, natsURL string, rec Recorder) (*Consumer, error) {
+// Start conecta a NATS, garantiza los streams ONIX_RAW (consume) y ONIX_NORM (publica),
+// y arranca un consumidor durable que normaliza raw → norm.
+func Start(ctx context.Context, natsURL string) (*Consumer, error) {
 	nc, err := nats.Connect(natsURL,
-		nats.RetryOnFailedConnect(true),
-		nats.MaxReconnects(-1),
-		nats.Name("onix-core"),
-	)
+		nats.RetryOnFailedConnect(true), nats.MaxReconnects(-1), nats.Name("onix-ingestor"))
 	if err != nil {
 		return nil, fmt.Errorf("conectar NATS: %w", err)
 	}
-
 	js, err := nc.JetStream()
 	if err != nil {
 		nc.Close()
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-
-	// Garantiza el stream (idempotente).
-	if _, err := js.AddStream(&nats.StreamConfig{
-		Name:     streamName,
-		Subjects: []string{subjects},
-		Storage:  nats.FileStorage,
-	}); err != nil && err != nats.ErrStreamNameAlreadyInUse {
-		// AddStream sobre uno existente con misma config no falla; si cambia config podría.
-		slog.Warn("AddStream", "err", err)
-	}
+	ensureStream(js, streamRaw, subjRawAll)
+	ensureStream(js, streamNorm, subjNormAll)
 
 	handler := func(m *nats.Msg) {
-		var e c.RawEvent
-		if err := json.Unmarshal(m.Data, &e); err != nil {
-			slog.Error("evento raw inválido, descartado", "err", err, "subject", m.Subject)
-			_ = m.Ack() // no reintentar un mensaje que nunca parseará
+		var raw c.RawEvent
+		if err := json.Unmarshal(m.Data, &raw); err != nil {
+			slog.Error("raw inválido, descartado", "err", err)
+			_ = m.Ack()
 			return
 		}
-		if err := rec.RecordEvent(ctx, e); err != nil {
-			slog.Error("no se pudo persistir el evento", "err", err, "session", e.Session)
-			_ = m.Nak() // reintentar
+		if !valid(raw) {
+			slog.Warn("raw incompleto, descartado", "session", raw.Session)
+			_ = m.Ack()
+			return
+		}
+		norm := normalize(raw)
+		data, _ := json.Marshal(norm)
+		if _, err := js.Publish(subjNorm+raw.Session, data); err != nil {
+			slog.Error("no se pudo publicar norm", "err", err, "session", raw.Session)
+			_ = m.Nak()
 			return
 		}
 		_ = m.Ack()
-		slog.Info("evento persistido", "session", e.Session, "role", e.AgentRole, "hook", e.Hook, "tool", derefStr(e.Tool))
+		slog.Info("normalizado → norm", "session", norm.Session, "hook", norm.Hook, "tool", deref(norm.Tool))
 	}
 
-	sub, err := js.Subscribe(subjects, handler,
-		nats.Durable(durableName),
-		nats.ManualAck(),
-		nats.DeliverAll(),
-		nats.AckExplicit(),
-	)
+	sub, err := js.Subscribe(subjRawAll, handler,
+		nats.Durable(durable), nats.ManualAck(), nats.DeliverAll(), nats.AckExplicit())
 	if err != nil {
 		nc.Close()
-		return nil, fmt.Errorf("suscribir: %w", err)
+		return nil, fmt.Errorf("suscribir raw: %w", err)
 	}
-
-	slog.Info("consumidor NATS activo", "stream", streamName, "subjects", subjects, "durable", durableName)
+	slog.Info("ingestor activo", "consume", subjRawAll, "publica", subjNormAll)
 	return &Consumer{nc: nc, sub: sub}, nil
 }
 
@@ -94,7 +85,43 @@ func (c *Consumer) Close() {
 	}
 }
 
-func derefStr(p *string) string {
+// valid comprueba los campos obligatorios del contrato raw.
+func valid(e c.RawEvent) bool {
+	return e.Session != "" && e.Project != "" && string(e.AgentRole) != "" && string(e.Hook) != ""
+}
+
+// normalize convierte un RawEvent en NormEvent: misma info + received_at (UTC).
+func normalize(r c.RawEvent) c.NormEvent {
+	n := c.NormEvent{
+		V:          1,
+		Session:    r.Session,
+		AgentRole:  r.AgentRole,
+		Hook:       r.Hook,
+		Ts:         r.Ts.UTC(),
+		ReceivedAt: time.Now().UTC(),
+		Tool:       r.Tool,
+		Params:     r.Params,
+		Tokens:     r.Tokens,
+		CostUsd:    r.CostUsd,
+		Cwd:        r.Cwd,
+		Project:    r.Project,
+		Stage:      r.Stage,
+	}
+	if r.Result != nil {
+		n.Result = &c.NormEventResult{ExitCode: r.Result.ExitCode, DurationMS: r.Result.DurationMS}
+	}
+	return n
+}
+
+func ensureStream(js nats.JetStreamContext, name, subjects string) {
+	if _, err := js.AddStream(&nats.StreamConfig{
+		Name: name, Subjects: []string{subjects}, Storage: nats.FileStorage,
+	}); err != nil && err != nats.ErrStreamNameAlreadyInUse {
+		slog.Warn("AddStream", "stream", name, "err", err)
+	}
+}
+
+func deref(p *string) string {
 	if p == nil {
 		return ""
 	}
