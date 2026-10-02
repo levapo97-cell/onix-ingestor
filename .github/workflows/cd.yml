@@ -1,0 +1,13 @@
+# CD de onix-ingestor → despliega en el VPS (en push a main). Invoca el pipeline reutilizable.
+name: cd
+on:
+  push:
+    branches: [main]
+jobs:
+  cd:
+    uses: levapo97-cell/onix-deploy/.github/workflows/reusable-cd.yml@main
+    with:
+      service: onix-ingestor
+      health_port: "8081"
+      health_path: "/healthz"
+    secrets: inherit
